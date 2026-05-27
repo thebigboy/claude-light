@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state="${1:-}"
+
+case "$state" in
+  idle|thinking|working|error)
+    ;;
+  *)
+    echo "usage: claude-light-state idle|thinking|working|error" >&2
+    exit 2
+    ;;
+esac
+
+state_dir="${HOME}/.claude-light"
+state_file="${state_dir}/state.json"
+mkdir -p "$state_dir"
+
+session_id=""
+cwd_value=""
+hook_event_name=""
+
+if [ -t 0 ]; then
+  input=""
+else
+  input="$(cat || true)"
+fi
+if command -v jq >/dev/null 2>&1 && [ -n "$input" ]; then
+  session_id="$(printf '%s' "$input" | jq -r '.session_id // ""')"
+  cwd_value="$(printf '%s' "$input" | jq -r '.cwd // ""')"
+  hook_event_name="$(printf '%s' "$input" | jq -r '.hook_event_name // ""')"
+fi
+
+timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+tmp_file="${state_file}.$$"
+if command -v jq >/dev/null 2>&1; then
+  jq -n \
+    --arg state "$state" \
+    --arg updated_at "$timestamp" \
+    --arg session_id "$session_id" \
+    --arg cwd "$cwd_value" \
+    --arg hook_event_name "$hook_event_name" \
+    '{
+      state: $state,
+      updated_at: $updated_at,
+      session_id: $session_id,
+      cwd: $cwd,
+      hook_event_name: $hook_event_name
+    }' > "$tmp_file"
+else
+  printf '{"state":"%s","updated_at":"%s"}\n' "$state" "$timestamp" > "$tmp_file"
+fi
+
+mv "$tmp_file" "$state_file"
