@@ -4,10 +4,10 @@ set -euo pipefail
 state="${1:-}"
 
 case "$state" in
-  idle|thinking|working|error)
+  idle|thinking|awaiting_confirmation|working|error)
     ;;
   *)
-    echo "usage: claude-light-state idle|thinking|working|error" >&2
+    echo "usage: claude-light-state idle|thinking|awaiting_confirmation|working|error" >&2
     exit 2
     ;;
 esac

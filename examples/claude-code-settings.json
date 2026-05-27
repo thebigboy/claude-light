@@ -31,13 +31,23 @@
         ]
       }
     ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state awaiting_confirmation"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "permission_prompt",
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state thinking"
+            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state awaiting_confirmation"
           }
         ]
       }

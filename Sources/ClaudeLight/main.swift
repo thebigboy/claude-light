@@ -4,6 +4,7 @@ import Foundation
 enum ClaudeState: String {
     case idle
     case thinking
+    case awaitingConfirmation = "awaiting_confirmation"
     case working
     case error
 
@@ -11,7 +12,7 @@ enum ClaudeState: String {
         switch self {
         case .idle:
             return NSColor(calibratedRed: 1.0, green: 0.08, blue: 0.06, alpha: 1.0)
-        case .thinking:
+        case .thinking, .awaitingConfirmation:
             return NSColor(calibratedRed: 1.0, green: 0.74, blue: 0.05, alpha: 1.0)
         case .working:
             return NSColor(calibratedRed: 0.18, green: 0.86, blue: 0.28, alpha: 1.0)
@@ -24,8 +25,17 @@ enum ClaudeState: String {
         switch self {
         case .idle, .error:
             return 1.0
-        case .thinking, .working:
+        case .thinking, .awaitingConfirmation, .working:
             return 0.86
+        }
+    }
+
+    var indicatorState: ClaudeState {
+        switch self {
+        case .awaitingConfirmation:
+            return .thinking
+        default:
+            return self
         }
     }
 }
@@ -39,7 +49,7 @@ final class LightView: NSView {
     private var animationStart = Date()
     private var animationTimer: Timer?
 
-    var state: ClaudeState = .idle {
+    var displayedState: ClaudeState = .idle {
         didSet {
             animationStart = Date()
             updateAnimationTimer()
@@ -64,9 +74,10 @@ final class LightView: NSView {
         dirtyRect.fill()
 
         drawHousing()
-        drawLight(.idle, at: 0)
-        drawLight(.thinking, at: 1)
-        drawLight(.working, at: 2)
+        let indicatorState = displayedState.indicatorState
+        drawLight(.idle, at: 0, isActive: indicatorState == .idle)
+        drawLight(.thinking, at: 1, isActive: indicatorState == .thinking)
+        drawLight(.working, at: 2, isActive: indicatorState == .working)
     }
 
     private func drawHousing() {
@@ -80,7 +91,7 @@ final class LightView: NSView {
         path.stroke()
     }
 
-    private func drawLight(_ lightState: ClaudeState, at index: Int) {
+    private func drawLight(_ lightState: ClaudeState, at index: Int, isActive: Bool) {
         let diameter: CGFloat = 28
         let gap: CGFloat = 8
         let top = (bounds.height - diameter * 3 - gap * 2) / 2
@@ -91,11 +102,11 @@ final class LightView: NSView {
             height: diameter
         )
 
-        let isActive = state == lightState
         let pulse = pulseScale(for: lightState, isActive: isActive)
         let glowAlpha = isActive ? pulse : 0.18
-        let fillAlpha = isActive ? lightState.activeAlpha : 0.16
         let color = lightState.color
+        let fillAlpha = activeFillAlpha(for: lightState, isActive: isActive, pulse: pulse)
+        let fillColor = activeFillColor(for: lightState, color: color, isActive: isActive, pulse: pulse)
 
         let shadow = NSShadow()
         shadow.shadowBlurRadius = isActive ? 10 + 8 * pulse : 3
@@ -103,7 +114,7 @@ final class LightView: NSView {
         shadow.shadowColor = color.withAlphaComponent(glowAlpha)
         shadow.set()
 
-        color.withAlphaComponent(fillAlpha).setFill()
+        fillColor.withAlphaComponent(fillAlpha).setFill()
         NSBezierPath(ovalIn: rect).fill()
 
         NSColor.white.withAlphaComponent(0.5).setFill()
@@ -127,14 +138,41 @@ final class LightView: NSView {
         }
 
         let elapsed = Date().timeIntervalSince(animationStart)
-        let wave = (sin(elapsed * 2.6) + 1) / 2
+        let speed = displayedState == .awaitingConfirmation ? 10.4 : 2.6
+        let wave = (sin(elapsed * speed) + 1) / 2
         return 0.45 + CGFloat(wave) * 0.45
+    }
+
+    private func activeFillAlpha(for lightState: ClaudeState, isActive: Bool, pulse: CGFloat) -> CGFloat {
+        guard isActive else {
+            return 0.16
+        }
+
+        guard lightState == .thinking || lightState == .working else {
+            return lightState.activeAlpha
+        }
+
+        return 0.50 + pulse * 0.44
+    }
+
+    private func activeFillColor(
+        for lightState: ClaudeState,
+        color: NSColor,
+        isActive: Bool,
+        pulse: CGFloat
+    ) -> NSColor {
+        guard isActive, lightState == .thinking || lightState == .working else {
+            return color
+        }
+
+        let brightness = 0.70 + pulse * 0.30
+        return color.blended(withFraction: 1 - brightness, of: NSColor.black) ?? color
     }
 
     private func updateAnimationTimer() {
         animationTimer?.invalidate()
 
-        guard state == .thinking || state == .working else {
+        guard displayedState == .thinking || displayedState == .awaitingConfirmation || displayedState == .working else {
             animationTimer = nil
             return
         }
@@ -148,12 +186,16 @@ final class LightView: NSView {
 }
 
 @MainActor
-final class FloatingLightController: NSObject {
+final class FloatingLightController: NSObject, NSWindowDelegate {
     private let stateURL: URL
+    private let defaults = UserDefaults.standard
+    private let frameDefaultsKey = "ClaudeLightWindowFrame"
     private let lightView = LightView(frame: NSRect(x: 0, y: 0, width: 48, height: 124))
     private var window: NSWindow!
     private var source: DispatchSourceFileSystemObject?
     private var directorySource: DispatchSourceFileSystemObject?
+    private var currentState: ClaudeState = .idle
+    private var isStartupSequenceRunning = false
 
     init(stateURL: URL) {
         self.stateURL = stateURL
@@ -163,10 +205,11 @@ final class FloatingLightController: NSObject {
         loadState()
         watchStateFile()
         watchStateDirectory()
+        runStartupSequence()
     }
 
     private func createWindow() {
-        let frame = NSRect(x: 80, y: 80, width: 48, height: 124)
+        let frame = savedWindowFrame() ?? NSRect(x: 80, y: 80, width: 48, height: 124)
         window = NSWindow(
             contentRect: frame,
             styleMask: [.borderless],
@@ -181,6 +224,7 @@ final class FloatingLightController: NSObject {
         window.contentView = lightView
         window.isMovableByWindowBackground = true
         window.ignoresMouseEvents = false
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -196,10 +240,61 @@ final class FloatingLightController: NSObject {
         guard let data = try? Data(contentsOf: stateURL),
               let payload = try? JSONDecoder().decode(StatePayload.self, from: data),
               let state = ClaudeState(rawValue: payload.state) else {
-            lightView.state = .error
+            applyState(.error)
             return
         }
-        lightView.state = state
+        applyState(state)
+    }
+
+    private func applyState(_ state: ClaudeState) {
+        currentState = state
+        guard !isStartupSequenceRunning else {
+            return
+        }
+        lightView.displayedState = state
+    }
+
+    private func runStartupSequence() {
+        isStartupSequenceRunning = true
+
+        let sequence: [ClaudeState] = [
+            .idle, .thinking, .working,
+            .idle, .thinking, .working,
+            .idle, .thinking, .working
+        ]
+
+        for (index, state) in sequence.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.14) { [weak self] in
+                self?.lightView.displayedState = state
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double(sequence.count) * 0.14 + 0.08) { [weak self] in
+            guard let self else { return }
+            self.isStartupSequenceRunning = false
+            self.lightView.displayedState = self.currentState
+        }
+    }
+
+    private func savedWindowFrame() -> NSRect? {
+        guard let frameString = defaults.string(forKey: frameDefaultsKey) else {
+            return nil
+        }
+
+        let frame = NSRectFromString(frameString)
+        guard frame.width > 0, frame.height > 0 else {
+            return nil
+        }
+
+        return frame
+    }
+
+    private func saveWindowFrame() {
+        defaults.set(NSStringFromRect(window.frame), forKey: frameDefaultsKey)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        saveWindowFrame()
     }
 
     private func watchStateFile() {
