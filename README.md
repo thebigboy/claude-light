@@ -1,5 +1,7 @@
 # Claude Light
 
+[中文说明](README.zh-CN.md)
+
 A tiny macOS floating traffic light for Claude Code.
 
 Claude Light shows Claude Code's current working state as a floating, always-on-top traffic light:
