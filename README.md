@@ -2,41 +2,57 @@
 
 [English](README.en.md)
 
-Claude Light 是一个用于 Claude Code 的 macOS 悬浮红绿灯。
+Claude Light 是一个适用于 **Claude Code** 和 **Codex CLI** 的 macOS 工作状态灯。
 
-它会把 Claude Code 当前的工作状态显示成一个始终置顶的小交通灯：
+它可以同时驱动：
 
-- 红灯：`idle`，空闲或本轮已结束
-- 黄灯：`thinking`，Claude 正在思考、生成回复，或工具执行结束后继续推理
-- 黄灯快闪：`awaiting_confirmation`，Claude 正在等待你确认权限请求
-- 绿灯：`working`，Claude 正在调用工具、执行命令或读写文件
-- 橙红灯：`error`，任务异常结束
+- macOS 桌面上的悬浮红绿灯
+- 通过 BLE 连接的 ESP32-S3 板载 RGB 灯
+- 后续接入 ESP32 GPIO 的实体红绿灯
 
-黄灯和绿灯点亮时带有柔和的呼吸效果。等待确认时仍显示黄灯，但呼吸速度会变为普通黄灯的 4 倍，用来提醒你回到 Claude Code 处理授权。悬浮灯可以拖动，关闭后下次启动会记住上次位置；刚启动时会按红、黄、绿快速依次亮三轮，方便你快速找到它在屏幕上的位置。
+## 状态含义
 
-整个方案不需要 HTTP 服务、WebSocket 或额外守护进程；Claude Code hooks 只负责写入本地 JSON 状态文件，macOS 悬浮灯负责监听这个文件并刷新显示。
+| 状态值 | 显示效果 | 含义 |
+| --- | --- | --- |
+| `idle` | 红灯常亮 | 当前空闲，或本轮任务已经完成 |
+| `thinking` | 黄灯慢呼吸 | Agent 正在思考、生成回复或处理工具结果 |
+| `awaiting_confirmation` | 黄灯快闪 | Agent 正在等待用户授权 |
+| `working` | 绿灯慢呼吸 | Agent 正在调用工具、执行命令或读写文件 |
+| `error` | 红灯快闪或橙红灯 | 任务异常结束或状态文件无法解析 |
 
 ## 工作原理
 
 ```text
-Claude Code hook 事件
-        |
-        v
-bin/claude-light-state
-        |
-        v
-~/.claude-light/state.json
-        |
-        v
-macOS 悬浮红绿灯
+Claude Code / Codex CLI Hooks
+              |
+              v
+      bin/claude-light-state
+              |
+              v
+    ~/.claude-light/state.json
+              |
+              v
+       Claude Light macOS App
+         |                |
+         v                v
+  桌面悬浮红绿灯      CoreBluetooth BLE
+                           |
+                           v
+                       ESP32-S3 RGB
 ```
 
+Hooks 只负责写入本地 JSON 状态文件。macOS App 监听状态文件、刷新悬浮灯，并通过 BLE 自动连接 ESP32-S3。
+
+ESP32 固件烧录完成后只需要 USB 供电，不需要通过 USB 连接 Mac。Mac 与 ESP32 之间通过 BLE 通信。
+
 ## 环境要求
+
+### 仅使用 macOS 悬浮灯
 
 - macOS 13 或更高版本
 - Xcode Command Line Tools 或 Xcode
 - Swift 6 兼容工具链
-- Claude Code，并启用 hooks
+- Claude Code 或 Codex CLI
 
 检查 Swift：
 
@@ -44,7 +60,15 @@ macOS 悬浮红绿灯
 swift --version
 ```
 
-## 安装
+### 使用 ESP32-S3 板载 RGB 灯
+
+- ESP32-S3 开发板
+- Arduino IDE
+- Arduino IDE 中安装 `esp32 by Espressif Systems`
+- 一根用于首次烧录的 USB 数据线
+- 后续供电使用的 USB 电源、充电器、充电宝或 Mac USB 接口
+
+## 安装 macOS App
 
 克隆项目：
 
@@ -53,36 +77,215 @@ git clone https://github.com/thebigboy/claude-light.git
 cd claude-light
 ```
 
-构建项目：
-
-```sh
-swift build
-```
-
-## 启动悬浮灯
+开发模式运行：
 
 ```sh
 swift run claude-light
 ```
 
-启动后，你应该能在 Mac 屏幕上看到一个竖向排列的小红绿灯。
+构建标准 macOS App：
 
-使用 Claude Code 时保持这个进程运行即可。如果需要停止，在终端按 `Ctrl-C`。
+```sh
+scripts/build-app.sh
+```
+
+构建产物位于：
+
+```text
+dist/Claude Light.app
+```
+
+推荐安装到 `/Applications`：
+
+```sh
+cp -R "dist/Claude Light.app" "/Applications/Claude Light.app"
+open "/Applications/Claude Light.app"
+```
+
+首次启动时，macOS 可能请求蓝牙权限。需要选择允许，否则 App 无法连接 ESP32。
+
+如果 macOS 阻止打开 App，可前往：
+
+```text
+系统设置 → 隐私与安全性 → 安全性 → 仍要打开
+```
+
+## 配置 Mac 开机自动启动
+
+安装 App 到 `/Applications` 后，打开：
+
+```text
+系统设置 → 通用 → 登录项与扩展 → 登录时打开
+```
+
+添加：
+
+```text
+/Applications/Claude Light.app
+```
+
+完成后，Mac 重启时 App 会自动启动、监听状态文件并重新连接 ESP32。
+
+## 烧录 ESP32-S3 固件
+
+Arduino 固件位于：
+
+```text
+firmware/claude-light-esp32/claude-light-esp32.ino
+```
+
+在 Arduino IDE 中：
+
+1. 打开 `claude-light-esp32.ino`。
+2. 选择 `工具 → 开发板 → esp32 → ESP32S3 Dev Module`。
+3. 建议设置 `USB CDC On Boot: Enabled`。
+4. 选择正确串口并上传。
+5. 打开串口监视器，将波特率设置为 `115200`。
+
+启动成功后应看到：
+
+```text
+ClaudeLight BLE ready
+Device: ClaudeLight
+Service: 7d6c1000-7a93-4b8b-9d55-4b31f058a501
+State characteristic: 7d6c1001-7a93-4b8b-9d55-4b31f058a501
+```
+
+ESP32 会广播名为 `ClaudeLight` 的 BLE 设备。手机系统蓝牙页面不一定显示普通 BLE 设备，需要使用 `nRF Connect` 或 `LightBlue` 扫描。
+
+固件烧录成功后无需重复烧录。ESP32 只要接通 USB 电源就会自动启动，Mac App 会自动扫描、连接并在断线后重连。
+
+## 配置 Claude Code Hooks
+
+示例配置：
+
+```text
+examples/claude-code-settings.json
+```
+
+Claude Code 支持以下配置位置：
+
+- 全局生效：`~/.claude/settings.json`
+- 项目级配置：`.claude/settings.json`
+- 仅本机项目配置：`.claude/settings.local.json`
+
+全局配置步骤：
+
+```sh
+mkdir -p ~/.claude
+open -e ~/.claude/settings.json
+```
+
+如果还没有 Claude Code 配置，可以从示例开始：
+
+```sh
+cp examples/claude-code-settings.json ~/.claude/settings.json
+```
+
+如果配置文件已经存在，只合并示例中的 `hooks` 对象，不要覆盖原有配置。
+
+### Claude Code 状态映射
+
+| Claude Code 事件 | 灯状态 |
+| --- | --- |
+| `UserPromptSubmit` | `thinking` |
+| `PreToolUse` | `working` |
+| `PostToolBatch` | `thinking` |
+| `PermissionRequest` | `awaiting_confirmation` |
+| `Notification: permission_prompt` | `awaiting_confirmation` |
+| `Stop` | `idle` |
+| `StopFailure` | `error` |
+
+配置完成后，在 Claude Code 中运行 `/hooks`，确认配置已经加载。
+
+## 配置 Codex CLI Hooks
+
+Codex CLI 原生支持生命周期 Hooks。推荐使用全局配置，让所有项目都能驱动状态灯。
+
+示例配置：
+
+```text
+examples/codex-hooks.json
+```
+
+复制为全局 Hooks 配置：
+
+```sh
+cp examples/codex-hooks.json ~/.codex/hooks.json
+```
+
+如果 `~/.codex/hooks.json` 已存在，只合并示例中的 `hooks` 对象，不要直接覆盖。
+
+Codex Hooks 默认启用。也可以在 `~/.codex/config.toml` 中显式启用：
+
+```toml
+[features]
+hooks = true
+```
+
+### Codex CLI 状态映射
+
+| Codex CLI 事件 | 灯状态 |
+| --- | --- |
+| `UserPromptSubmit` | `thinking` |
+| `PreToolUse` | `working` |
+| `PostToolUse` | `thinking` |
+| `PermissionRequest` | `awaiting_confirmation` |
+| `Stop` | `idle` |
+
+Codex CLI 当前没有对应 Claude Code `StopFailure` 的稳定 Hook，因此异常结束不一定能自动显示 `error`。
+
+配置完成后：
+
+1. 重新启动 Codex CLI。
+2. 在 Codex CLI 中运行 `/hooks`。
+3. 检查 Hook 来源并信任新增 Hooks。
+
+Codex 会根据 Hook 内容哈希记录信任状态。修改 Hook 命令后，需要再次通过 `/hooks` 审核。
+
+## 修改 Hooks 中的项目绝对路径
+
+Claude Code 和 Codex CLI 示例配置使用：
+
+```sh
+/Users/wangzhen/code/ai/claude-light/bin/claude-light-state <state>
+```
+
+如果项目位于其他目录，必须替换所有 Hook 命令中的路径。
+
+例如项目位于：
+
+```text
+/Users/alice/dev/claude-light
+```
+
+对应命令应为：
+
+```sh
+/Users/alice/dev/claude-light/bin/claude-light-state <state>
+```
+
+可以在项目目录执行：
+
+```sh
+pwd
+```
+
+然后将输出路径拼接 `/bin/claude-light-state`。
 
 ## 手动测试
 
-打开另一个终端，执行：
+确保 Claude Light App 正在运行，然后执行：
 
 ```sh
+bin/claude-light-state idle
 bin/claude-light-state thinking
 bin/claude-light-state awaiting_confirmation
 bin/claude-light-state working
-bin/claude-light-state idle
+bin/claude-light-state error
 ```
 
-悬浮灯应该会依次切换为普通黄灯、快闪黄灯、绿灯、红灯。
-
-状态文件会写入：
+状态文件位于：
 
 ```text
 ~/.claude-light/state.json
@@ -100,139 +303,80 @@ bin/claude-light-state idle
 }
 ```
 
-## 配置 Claude Code Hooks
+## Mac 重启后的日常使用
 
-项目内置了一份 Claude Code hooks 示例配置：
+如果 Claude Light App 已加入登录项：
+
+1. 给 ESP32 接通 USB 电源。
+2. 启动 Mac。
+3. Claude Light App 自动启动。
+4. App 自动通过 BLE 连接 ESP32。
+5. 正常使用 Claude Code 或 Codex CLI。
+
+不需要重新烧录 ESP32，也不需要让 ESP32 通过 USB 连接 Mac。
+
+如果没有配置登录项，每次 Mac 重启后手动打开：
+
+```sh
+open "/Applications/Claude Light.app"
+```
+
+## 多会话行为
+
+Claude Code、Codex CLI 和多个并行会话共用：
 
 ```text
-examples/claude-code-settings.json
+~/.claude-light/state.json
 ```
 
-把这个文件里的 `hooks` 对象合并到下面任意一个 Claude Code 设置文件中：
-
-- 用户级，全局生效：`~/.claude/settings.json`
-- 项目级，可随项目提交：`.claude/settings.json`
-- 项目本地级，仅当前机器生效：`.claude/settings.local.json`
-
-如果你想全局生效，可以编辑：
-
-```sh
-mkdir -p ~/.claude
-open -e ~/.claude/settings.json
-```
-
-如果文件还不存在，可以直接从示例复制：
-
-```sh
-cp examples/claude-code-settings.json ~/.claude/settings.json
-```
-
-如果你已经有 Claude Code 配置，请只合并 `hooks` 部分，避免覆盖原有设置。
-
-## 重要：修改 Hook 命令里的项目路径
-
-示例配置里的 hook 命令使用了当前作者机器上的项目路径：
-
-```sh
-/Users/wangzhen/code/ai/claude-light/bin/claude-light-state <state>
-```
-
-这个绝对路径必须写入你的 `~/.claude/settings.json`，但其中的 `/Users/wangzhen/code/ai/claude-light` 需要按你 `git clone` 后的实际项目目录修改。
-
-例如，如果你把项目克隆到了：
-
-```text
-/Users/alice/dev/claude-light
-```
-
-那 settings 里的命令应该改成：
-
-```sh
-/Users/alice/dev/claude-light/bin/claude-light-state <state>
-```
-
-你可以用下面命令查看当前项目目录：
-
-```sh
-pwd
-```
-
-然后把输出路径拼上 `/bin/claude-light-state`，替换到 `~/.claude/settings.json` 的每个 hook command 中。
-
-## 灯色含义
-
-| 显示效果 | 状态值 | 含义 |
-| --- | --- | --- |
-| 红灯常亮 | `idle` | Claude 当前空闲，或本轮对话已经完成 |
-| 黄灯慢呼吸 | `thinking` | Claude 正在思考、生成回复，或工具执行结束后继续推理 |
-| 黄灯快闪 | `awaiting_confirmation` | Claude 正在等待你确认权限请求，需要回到终端处理 |
-| 绿灯慢呼吸 | `working` | Claude 正在使用工具，例如执行命令、读取文件、编辑文件、搜索等 |
-| 橙红灯常亮 | `error` | Claude 本轮任务异常结束，或状态文件无法解析 |
-
-## Hook 状态映射
-
-| Claude Code 事件 | 灯状态 | 含义 |
-| --- | --- | --- |
-| `UserPromptSubmit` | `thinking` | Claude 收到你的 prompt |
-| `PreToolUse` | `working` | Claude 准备调用工具 |
-| `PostToolBatch` | `thinking` | 工具批次完成，Claude 可能继续思考 |
-| `PermissionRequest` | `awaiting_confirmation` | Claude 即将展示权限确认 |
-| `Notification: permission_prompt` | `awaiting_confirmation` | Claude 正在等待用户授权 |
-| `Stop` | `idle` | 本轮对话完成 |
-| `StopFailure` | `error` | 本轮异常结束 |
-
-## 示例 Hook 配置
-
-参考 [examples/claude-code-settings.json](examples/claude-code-settings.json)。
-
-每个 hook 都会调用：
-
-```sh
-/Users/wangzhen/code/ai/claude-light/bin/claude-light-state <state>
-```
-
-如果你把项目克隆到了其他目录，需要把 Claude Code 设置里的绝对路径改成你本机实际路径。尤其是 `/Users/wangzhen/code/ai/claude-light` 这一段，必须替换为你的 clone 目录。
+最后触发 Hook 的会话决定当前灯色。例如 Codex 正在工作时，另一个 Claude Code 会话结束并写入 `idle`，灯会切换为红色。
 
 ## 常见问题
 
 ### 手动执行脚本后灯没有变化
 
-先检查状态文件：
+检查状态文件：
 
 ```sh
 cat ~/.claude-light/state.json
 ```
 
-再手动写入一个状态：
+确认 App 正在运行：
 
 ```sh
-bin/claude-light-state working
+pgrep -fl claude-light
+```
+
+### ESP32 没有跟随状态变化
+
+1. 确认 macOS 已允许 Claude Light 使用蓝牙。
+2. 确认 ESP32 已供电。
+3. 重启 Claude Light App。
+4. 使用 `nRF Connect` 或 `LightBlue` 确认能扫描到 `ClaudeLight`。
+5. 如果 ESP32 使用外置天线版本，确认已连接 2.4 GHz IPEX/U.FL 天线。
+
+### Claude Code Hooks 没有触发
+
+在 Claude Code 中运行 `/hooks`，并确认 Hook 命令中的绝对路径正确。
+
+### Codex CLI Hooks 没有触发
+
+在 Codex CLI 中运行 `/hooks`，检查并信任 Hooks。确认 `~/.codex/hooks.json` 格式正确，并确认没有在 `~/.codex/config.toml` 中设置：
+
+```toml
+[features]
+hooks = false
 ```
 
 ### App 启动后终端出现 IMK 日志
 
-类似下面的日志通常是 macOS InputMethodKit 的系统日志，可以忽略：
+macOS InputMethodKit 日志通常可以忽略，只要悬浮灯和 ESP32 状态能够正常变化即可。
 
-```text
-+[IMKClient subclass]: chose IMKClient_Modern
-error messaging the mach port for IMKCFRunLoopWakeUpReliable
-```
+## 参考资料
 
-只要悬浮灯能显示并跟随状态变化，就不影响使用。
-
-### Claude Code hooks 没有触发
-
-在 Claude Code 里运行 `/hooks`，确认配置已经被加载。
-
-同时确认 settings 里的命令路径指向真实脚本：
-
-```sh
-ls -l /Users/wangzhen/code/ai/claude-light/bin/claude-light-state
-```
-
-## 灵感来源
-
-配色和实体红绿灯的观感参考了 [JasonLam08/cursor_agent_status_light](https://github.com/JasonLam08/cursor_agent_status_light/)，这是一个基于 ESP32-C3 BLE 的 Cursor Agent 状态灯项目。
+- [Codex Hooks 官方文档](https://developers.openai.com/codex/hooks)
+- [Codex Hooks 配置位置](https://developers.openai.com/codex/config-advanced#hooks)
+- [JasonLam08/cursor_agent_status_light](https://github.com/JasonLam08/cursor_agent_status_light)
 
 ## 许可证
 

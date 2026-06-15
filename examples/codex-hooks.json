@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state thinking"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state working"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state thinking"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state awaiting_confirmation"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/wangzhen/code/ai/claude-light/bin/claude-light-state idle"
+          }
+        ]
+      }
+    ]
+  }
+}

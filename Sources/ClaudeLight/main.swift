@@ -1,4 +1,5 @@
 import AppKit
+import CoreBluetooth
 import Foundation
 
 enum ClaudeState: String {
@@ -42,6 +43,119 @@ enum ClaudeState: String {
 
 struct StatePayload: Decodable {
     let state: String
+}
+
+final class BluetoothStateController: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+    private let serviceUUID = CBUUID(string: "7d6c1000-7a93-4b8b-9d55-4b31f058a501")
+    private let stateCharacteristicUUID = CBUUID(string: "7d6c1001-7a93-4b8b-9d55-4b31f058a501")
+    private var centralManager: CBCentralManager!
+    private var peripheral: CBPeripheral?
+    private var stateCharacteristic: CBCharacteristic?
+    private var currentState: ClaudeState = .idle
+
+    override init() {
+        super.init()
+        centralManager = CBCentralManager(delegate: self, queue: .main)
+    }
+
+    func send(_ state: ClaudeState) {
+        currentState = state
+        writeCurrentState()
+    }
+
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn {
+            startScanning()
+        }
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDiscover peripheral: CBPeripheral,
+        advertisementData: [String: Any],
+        rssi RSSI: NSNumber
+    ) {
+        self.peripheral = peripheral
+        peripheral.delegate = self
+        central.stopScan()
+        central.connect(peripheral)
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        peripheral.discoverServices([serviceUUID])
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didFailToConnect peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        resetAndScan()
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        resetAndScan()
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard error == nil else {
+            resetAndScan()
+            return
+        }
+
+        peripheral.services?
+            .filter { $0.uuid == serviceUUID }
+            .forEach { peripheral.discoverCharacteristics([stateCharacteristicUUID], for: $0) }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didDiscoverCharacteristicsFor service: CBService,
+        error: Error?
+    ) {
+        guard error == nil,
+              let characteristic = service.characteristics?.first(where: { $0.uuid == stateCharacteristicUUID }) else {
+            resetAndScan()
+            return
+        }
+
+        stateCharacteristic = characteristic
+        writeCurrentState()
+    }
+
+    private func startScanning() {
+        guard centralManager.state == .poweredOn, peripheral == nil else {
+            return
+        }
+
+        centralManager.scanForPeripherals(
+            withServices: [serviceUUID],
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+        )
+    }
+
+    private func writeCurrentState() {
+        guard let peripheral,
+              let characteristic = stateCharacteristic,
+              let data = currentState.rawValue.data(using: .utf8) else {
+            return
+        }
+
+        let writeType: CBCharacteristicWriteType = characteristic.properties.contains(.writeWithoutResponse)
+            ? .withoutResponse
+            : .withResponse
+        peripheral.writeValue(data, for: characteristic, type: writeType)
+    }
+
+    private func resetAndScan() {
+        peripheral = nil
+        stateCharacteristic = nil
+        startScanning()
+    }
 }
 
 @MainActor
@@ -169,6 +283,12 @@ final class LightView: NSView {
         return color.blended(withFraction: 1 - brightness, of: NSColor.black) ?? color
     }
 
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "退出 Claude Light", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
     private func updateAnimationTimer() {
         animationTimer?.invalidate()
 
@@ -188,6 +308,7 @@ final class LightView: NSView {
 @MainActor
 final class FloatingLightController: NSObject, NSWindowDelegate {
     private let stateURL: URL
+    private let bluetoothController: BluetoothStateController
     private let defaults = UserDefaults.standard
     private let frameDefaultsKey = "ClaudeLightWindowFrame"
     private let lightView = LightView(frame: NSRect(x: 0, y: 0, width: 48, height: 124))
@@ -197,8 +318,9 @@ final class FloatingLightController: NSObject, NSWindowDelegate {
     private var currentState: ClaudeState = .idle
     private var isStartupSequenceRunning = false
 
-    init(stateURL: URL) {
+    init(stateURL: URL, bluetoothController: BluetoothStateController) {
         self.stateURL = stateURL
+        self.bluetoothController = bluetoothController
         super.init()
         createWindow()
         ensureStateFile()
@@ -248,6 +370,7 @@ final class FloatingLightController: NSObject, NSWindowDelegate {
 
     private func applyState(_ state: ClaudeState) {
         currentState = state
+        bluetoothController.send(state)
         guard !isStartupSequenceRunning else {
             return
         }
@@ -356,6 +479,7 @@ let stateURL = home
     .appendingPathComponent(".claude-light", isDirectory: true)
     .appendingPathComponent("state.json")
 
-let controller = FloatingLightController(stateURL: stateURL)
+let bluetoothController = BluetoothStateController()
+let controller = FloatingLightController(stateURL: stateURL, bluetoothController: bluetoothController)
 _ = controller
 app.run()
