@@ -6,7 +6,9 @@
 #include <Wire.h>
 
 #include "chinese_font.h"
-#include "confirm_prompt_mp3.h"
+#include "connected_audio_mp3.h"
+#include "confirmation_audio_mp3.h"
+#include "disconnected_audio_mp3.h"
 
 #ifndef RGB_BUILTIN
 #define RGB_BUILTIN 48
@@ -31,8 +33,7 @@ constexpr int TRAFFIC_PWM_RESOLUTION = 8;
 constexpr uint8_t OLED_ADDRESS = 0x3C;
 constexpr int OLED_WIDTH = 128;
 constexpr int OLED_HEIGHT = 32;
-constexpr int CONFIRMATION_PLAY_COUNT = 2;
-constexpr unsigned long CONFIRMATION_PLAY_GAP_MS = 180;
+constexpr size_t AUDIO_QUEUE_CAPACITY = 8;
 
 enum class ClaudeState {
   Idle,
@@ -42,10 +43,24 @@ enum class ClaudeState {
   Error,
 };
 
-ClaudeState currentState = ClaudeState::Idle;
-bool deviceConnected = false;
+enum class AudioPrompt {
+  Connected,
+  Confirmation,
+  Disconnected,
+};
+
+struct AudioRequest {
+  AudioPrompt prompt;
+  uint8_t repeatCount;
+};
+
+volatile ClaudeState currentState = ClaudeState::Idle;
+volatile bool deviceConnected = false;
 unsigned long connectionAnimationStart = 0;
-volatile bool confirmationAudioRequested = false;
+AudioRequest audioQueue[AUDIO_QUEUE_CAPACITY] = {};
+volatile size_t audioQueueHead = 0;
+volatile size_t audioQueueTail = 0;
+portMUX_TYPE audioQueueMux = portMUX_INITIALIZER_UNLOCKED;
 I2SClass i2s;
 bool oledReady = false;
 uint8_t oledBuffer[OLED_WIDTH * OLED_HEIGHT / 8] = {};
@@ -361,6 +376,61 @@ bool initializeDisplay() {
   return true;
 }
 
+void requestAudio(AudioPrompt prompt, uint8_t repeatCount = 1) {
+  bool queued = false;
+
+  portENTER_CRITICAL(&audioQueueMux);
+  const size_t nextTail = (audioQueueTail + 1) % AUDIO_QUEUE_CAPACITY;
+  if (nextTail != audioQueueHead) {
+    audioQueue[audioQueueTail] = {prompt, repeatCount};
+    audioQueueTail = nextTail;
+    queued = true;
+  }
+  portEXIT_CRITICAL(&audioQueueMux);
+
+  if (!queued) {
+    Serial.println("Audio queue full; prompt dropped");
+  }
+}
+
+bool popAudioRequest(AudioRequest &request) {
+  bool hasRequest = false;
+
+  portENTER_CRITICAL(&audioQueueMux);
+  if (audioQueueHead != audioQueueTail) {
+    request = audioQueue[audioQueueHead];
+    audioQueueHead = (audioQueueHead + 1) % AUDIO_QUEUE_CAPACITY;
+    hasRequest = true;
+  }
+  portEXIT_CRITICAL(&audioQueueMux);
+
+  return hasRequest;
+}
+
+const char *audioPromptName(AudioPrompt prompt) {
+  switch (prompt) {
+    case AudioPrompt::Connected:
+      return "connected";
+    case AudioPrompt::Confirmation:
+      return "confirmation";
+    case AudioPrompt::Disconnected:
+      return "disconnected";
+  }
+  return "unknown";
+}
+
+bool playAudioPrompt(AudioPrompt prompt) {
+  switch (prompt) {
+    case AudioPrompt::Connected:
+      return i2s.playMP3(connected_audio_mp3, connected_audio_mp3_len);
+    case AudioPrompt::Confirmation:
+      return i2s.playMP3(confirmation_audio_mp3, confirmation_audio_mp3_len);
+    case AudioPrompt::Disconnected:
+      return i2s.playMP3(disconnected_audio_mp3, disconnected_audio_mp3_len);
+  }
+  return false;
+}
+
 bool updateState(const String &value) {
   const ClaudeState previousState = currentState;
 
@@ -380,7 +450,7 @@ bool updateState(const String &value) {
 
   if (currentState == ClaudeState::AwaitingConfirmation &&
       previousState != ClaudeState::AwaitingConfirmation) {
-    confirmationAudioRequested = true;
+    requestAudio(AudioPrompt::Confirmation, 2);
   }
 
   Serial.printf("State: %s\n", value.c_str());
@@ -389,24 +459,19 @@ bool updateState(const String &value) {
 
 void audioTask(void *) {
   while (true) {
-    if (!confirmationAudioRequested) {
-      vTaskDelay(pdMS_TO_TICKS(20));
+    AudioRequest request = {};
+    if (popAudioRequest(request)) {
+      Serial.printf("Playing %s prompt x%u\n", audioPromptName(request.prompt), request.repeatCount);
+      for (uint8_t count = 0; count < request.repeatCount; ++count) {
+        if (!playAudioPrompt(request.prompt)) {
+          Serial.printf("Failed to play %s prompt\n", audioPromptName(request.prompt));
+          break;
+        }
+      }
       continue;
     }
 
-    confirmationAudioRequested = false;
-    Serial.println("Playing confirmation prompt");
-
-    for (int count = 0; count < CONFIRMATION_PLAY_COUNT; ++count) {
-      if (!i2s.playMP3(confirm_prompt_mp3, confirm_prompt_mp3_len)) {
-        Serial.println("Failed to play confirmation prompt");
-        break;
-      }
-
-      if (count + 1 < CONFIRMATION_PLAY_COUNT) {
-        vTaskDelay(pdMS_TO_TICKS(CONFIRMATION_PLAY_GAP_MS));
-      }
-    }
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
 
@@ -414,11 +479,13 @@ class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *) override {
     deviceConnected = true;
     connectionAnimationStart = millis();
+    requestAudio(AudioPrompt::Connected);
     Serial.println("BLE client connected");
   }
 
   void onDisconnect(BLEServer *server) override {
     deviceConnected = false;
+    requestAudio(AudioPrompt::Disconnected);
     Serial.println("BLE client disconnected; advertising restarted");
     server->getAdvertising()->start();
   }
