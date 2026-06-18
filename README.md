@@ -16,6 +16,8 @@ Claude Light 是一个适用于 **Claude Code** 和 **Codex CLI** 的 macOS 工�
 
 [![项目演示视频](./assets/show-pic.jpg)](./assets/show-video.mp4)
 
+<video src="./assets/show-video.mp4" controls width="800"></video>
+
 ## 状态含义
 
 | 状态值 | 显示效果 | 含义 |
