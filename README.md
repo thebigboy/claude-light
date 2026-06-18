@@ -10,6 +10,12 @@ Claude Light 是一个适用于 **Claude Code** 和 **Codex CLI** 的 macOS 工�
 - 通过 BLE 连接的 ESP32-S3 板载 RGB 灯
 - 后续接入 ESP32 GPIO 的实体红绿灯
 
+## 项目演示
+
+本视频演示了系统的主要功能流程，包括登录、数据展示、业务操作和结果查看。
+
+[![项目演示视频](./assets/show-pic.jpg)](./assets/show-video.mp4)
+
 ## 状态含义
 
 | 状态值 | 显示效果 | 含义 |
